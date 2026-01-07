@@ -5,19 +5,17 @@ from garminconnect import Garmin
 from notion_client import Client
 
 # ================= ⚙️ 配置区域 =================
-
-# 1. 设为 1200 条 (确保拉取过去一年的运动)
+# 1. 运动记录: 1200 条
 TOTAL_ACTIVITIES_TO_SYNC = 1200 
 
 # 2. 每次请求数量
 BATCH_SIZE = 100
 
-# 3. 回填过去 366 天 (覆盖整整一年)
+# 3. 回填过去 366 天
 DAYS_TO_BACKFILL = 366 
-
 # ==============================================
 
-# --- 1. 静态翻译字典 ---
+# --- 静态翻译字典 ---
 TYPE_TRANSLATION = {
     "Running": "跑步", "Cycling": "骑行", "Walking": "徒步", "Swimming": "游泳",
     "Strength": "力量训练", "Cardio": "有氧运动", "Yoga": "瑜伽", "Hiking": "登山",
@@ -52,7 +50,7 @@ def format_pace(speed):
     seconds = int((pace - minutes) * 60)
     return f"{minutes}:{seconds:02d}"
 
-# --- 核心功能：写入 Notion ---
+# --- 写入 Notion ---
 
 def sync_activity(notion, db_id, activity):
     name = activity.get('activityName', 'Unnamed')
@@ -110,8 +108,11 @@ def sync_daily_steps(notion, db_id, data):
 
 def sync_sleep(notion, db_id, data):
     daily = data.get('dailySleepDTO', {})
-    date_str = daily.get('calendarDate')
-    # [修复] 加上 or 0 防止报错
+    date_str = daily.get('calendarDate') # 原始格式 2026-01-07
+    
+    # ⭐⭐ 【关键修改】把 2026-01-07 变成 2026/01/07 ⭐⭐
+    title_date = date_str.replace('-', '/') 
+    
     total_sleep = daily.get('sleepTimeSeconds') or 0
     
     if total_sleep == 0:
@@ -123,12 +124,14 @@ def sync_sleep(notion, db_id, data):
         filter={"property": "长日期", "date": {"equals": date_str}}
     )
     if query['results']:
+        # 如果你没删掉 Notion 里的旧数据，这里会显示“已存在”并跳过
         print(f"   [.] 睡眠已存在: {date_str}")
         return
 
     goal_met = total_sleep >= (8 * 3600)
     props = {
-        "日期": {"title": [{"text": {"content": date_str}}]},
+        # 使用 formatting 后的 title_date
+        "日期": {"title": [{"text": {"content": title_date}}]}, 
         "长日期": {"date": {"start": date_str}},
         "总睡眠 (h)": {"number": round(total_sleep / 3600, 1)},
         "深睡 (h)": {"number": round(daily.get('deepSleepSeconds', 0) / 3600, 1)},
@@ -138,7 +141,7 @@ def sync_sleep(notion, db_id, data):
         "睡眠目标": {"checkbox": goal_met}
     }
     notion.pages.create(parent={"database_id": db_id}, properties=props, icon={"emoji": "😴"})
-    print(f"   [+] 睡眠补全: {round(total_sleep/3600, 1)}h")
+    print(f"   [+] 睡眠补全: {title_date}")
 
 def main():
     print(f"🚀 启动超级回填脚本 (目标: {TOTAL_ACTIVITIES_TO_SYNC} 条运动 / {DAYS_TO_BACKFILL} 天生活数据)")
@@ -166,7 +169,7 @@ def main():
 
     notion = Client(auth=notion_token)
 
-    # 分页拉取运动记录
+    # 1. 运动记录
     print(f"\n🏃 正在拉取运动记录 (每页 {BATCH_SIZE} 条)...")
     processed_count = 0
     start_index = 0
@@ -174,31 +177,23 @@ def main():
     while processed_count < TOTAL_ACTIVITIES_TO_SYNC:
         remaining = TOTAL_ACTIVITIES_TO_SYNC - processed_count
         current_limit = min(BATCH_SIZE, remaining)
-        
-        print(f"\n📄 正在读取第 {start_index} 到 {start_index + current_limit} 条...")
-        
+        print(f"\n📄 读取第 {start_index} - {start_index + current_limit} 条...")
         try:
             activities = garmin.get_activities(start_index, current_limit)
         except Exception as e:
-            print(f"⚠️ 读取 Garmin 接口失败: {e}")
-            break
-            
+            print(f"⚠️ 接口错误: {e}")
+            break   
         if not activities:
-            print("✅ 已没有更多历史记录。")
+            print("✅ 历史数据已取完")
             break
-            
         for act in activities:
             sync_activity(notion, db_act, act)
-        
-        count = len(activities)
-        processed_count += count
-        start_index += count
-        
-        print(f"   -> 本页完成，休息 1 秒...")
+        processed_count += len(activities)
+        start_index += len(activities)
         time.sleep(1)
 
-    # 补全步数和睡眠
-    print(f"\n📅 正在回填过去 {DAYS_TO_BACKFILL} 天的步数和睡眠...")
+    # 2. 步数和睡眠
+    print(f"\n📅 正在回填过去 {DAYS_TO_BACKFILL} 天的数据...")
     today = date.today()
     start = today - timedelta(days=DAYS_TO_BACKFILL)
     current = start
@@ -206,7 +201,6 @@ def main():
     while current < today:
         day_str = current.isoformat()
         print(f"\n🔎 检查: {day_str}")
-        
         try:
             steps = garmin.get_daily_steps(day_str, day_str)
             if steps: sync_daily_steps(notion, db_step, steps[0])
@@ -222,7 +216,7 @@ def main():
         time.sleep(1) 
         current += timedelta(days=1)
 
-    print("\n✅ 所有任务圆满完成！")
+    print("\n✅ 所有任务完成！")
 
 if __name__ == "__main__":
     main()
