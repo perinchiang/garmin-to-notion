@@ -2,13 +2,13 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    # This cron job will run every 15 minutes from 6 AM to 11 PM Eastern Time
-    # - cron: '*/10 10-23 * * *'  # Every 15 minutes from 10:00 to 23:45 UTC 
-    # - cron: '*/10 0-3 * * *'    # Every 15 minutes from 00:00 to 03:45 UTC
-    - cron: '0 1 * * *' # Daily
-  workflow_dispatch:
+    # 北京时间每天早上 9 点运行 (UTC时间 1:00)
+    # 你可以根据需要调整 cron 表达式
+    - cron: '0 1 * * *' 
+  workflow_dispatch: # 允许手动点击运行
+
 env:
-  TZ: 'Asia/Shanghai'
+  TZ: 'Asia/Shanghai' # 确保时区是北京时间
 
 jobs:
   sync:
@@ -39,12 +39,14 @@ jobs:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
-          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
-          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
-          NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
+          # 👇 这里的映射非常关键，确保指向你的中文数据库 Secret
+          NOTION_DB_ID: ${{ secrets.NOTION_CN_DB_ID }}
+          NOTION_PR_DB_ID: ${{ secrets.NOTION_CN_PR_DB_ID }}
+          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_CN_STEPS_DB_ID }}
+          NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_CN_SLEEP_DB_ID }}
           TZ: 'Asia/Shanghai'
         run: |
+          # 按顺序运行脚本
           python garmin-activities.py
           python personal-records.py
           python daily-steps.py
