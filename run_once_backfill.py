@@ -1,18 +1,23 @@
 import os
 import time
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from garminconnect import Garmin
 from notion_client import Client
 
 # ================= ⚙️ 配置区域 =================
-# 回填过去多少天的数据？(建议先试 30 天，以免超时)
-DAYS_TO_BACKFILL = 30 
 
-# 回填最近多少条运动记录？(0-100之间)
-ACTIVITY_LIMIT = 50 
+# 1. 设为 1200 条 (确保拉取过去一年的运动)
+TOTAL_ACTIVITIES_TO_SYNC = 1200 
+
+# 2. 每次请求数量
+BATCH_SIZE = 100
+
+# 3. 回填过去 366 天 (覆盖整整一年)
+DAYS_TO_BACKFILL = 366 
+
 # ==============================================
 
-# --- 1. 静态翻译字典 (内置汉化) ---
+# --- 1. 静态翻译字典 ---
 TYPE_TRANSLATION = {
     "Running": "跑步", "Cycling": "骑行", "Walking": "徒步", "Swimming": "游泳",
     "Strength": "力量训练", "Cardio": "有氧运动", "Yoga": "瑜伽", "Hiking": "登山",
@@ -35,7 +40,6 @@ def translate_effect(label):
     if formatted.lower() == "vo2 max": formatted = "VO2 Max"
     return EFFECT_TRANSLATION.get(formatted, formatted)
 
-# --- 2. 辅助工具函数 ---
 def format_duration(seconds):
     if not seconds: return "0h 0m"
     m = seconds // 60
@@ -48,16 +52,14 @@ def format_pace(speed):
     seconds = int((pace - minutes) * 60)
     return f"{minutes}:{seconds:02d}"
 
-# --- 3. 核心功能：写入 Notion ---
+# --- 核心功能：写入 Notion ---
 
 def sync_activity(notion, db_id, activity):
-    # 解析数据
     name = activity.get('activityName', 'Unnamed')
     start_time = activity.get('startTimeGMT')
     a_type = activity.get('activityType', {}).get('typeKey', 'Unknown').replace('_', ' ').title()
     cn_type = translate_type(a_type)
     
-    # 检查是否存在
     query = notion.databases.query(
         database_id=db_id,
         filter={
@@ -68,10 +70,9 @@ def sync_activity(notion, db_id, activity):
         }
     )
     if query['results']:
-        print(f"   [.] 已存在: {start_time[:10]} {name}")
+        print(f"      [.] 已存在: {start_time[:10]} - {name}")
         return
 
-    # 写入新数据
     props = {
         "日期": {"date": {"start": start_time}},
         "运动类型": {"select": {"name": cn_type}},
@@ -85,11 +86,10 @@ def sync_activity(notion, db_id, activity):
         "PR": {"checkbox": activity.get('pr', False)},
     }
     notion.pages.create(parent={"database_id": db_id}, properties=props)
-    print(f"   [+] 新增: {start_time[:10]} {name}")
+    print(f"      [+] 写入成功: {start_time[:10]} - {name}")
 
 def sync_daily_steps(notion, db_id, data):
     date_str = data.get('calendarDate')
-    # 检查是否存在
     query = notion.databases.query(
         database_id=db_id,
         filter={"property": "日期", "date": {"equals": date_str}}
@@ -98,7 +98,6 @@ def sync_daily_steps(notion, db_id, data):
         print(f"   [.] 步数已存在: {date_str}")
         return
 
-    # 写入
     props = {
         "运动类型": {"title": [{"text": {"content": "Walking"}}]},
         "日期": {"date": {"start": date_str}},
@@ -107,18 +106,18 @@ def sync_daily_steps(notion, db_id, data):
         "总距离 (km)": {"number": round((data.get('totalDistance') or 0) / 1000, 2)}
     }
     notion.pages.create(parent={"database_id": db_id}, properties=props)
-    print(f"   [+] 步数已补全: {data.get('totalSteps')}")
+    print(f"   [+] 步数补全: {data.get('totalSteps')}")
 
 def sync_sleep(notion, db_id, data):
     daily = data.get('dailySleepDTO', {})
     date_str = daily.get('calendarDate')
-    total_sleep = daily.get('sleepTimeSeconds', 0)
+    # [修复] 加上 or 0 防止报错
+    total_sleep = daily.get('sleepTimeSeconds') or 0
     
     if total_sleep == 0:
         print(f"   [x] 无睡眠数据: {date_str}")
         return
 
-    # 检查是否存在
     query = notion.databases.query(
         database_id=db_id,
         filter={"property": "长日期", "date": {"equals": date_str}}
@@ -127,8 +126,7 @@ def sync_sleep(notion, db_id, data):
         print(f"   [.] 睡眠已存在: {date_str}")
         return
 
-    # 写入
-    goal_met = total_sleep >= (8 * 3600) # 8小时目标
+    goal_met = total_sleep >= (8 * 3600)
     props = {
         "日期": {"title": [{"text": {"content": date_str}}]},
         "长日期": {"date": {"start": date_str}},
@@ -140,50 +138,66 @@ def sync_sleep(notion, db_id, data):
         "睡眠目标": {"checkbox": goal_met}
     }
     notion.pages.create(parent={"database_id": db_id}, properties=props, icon={"emoji": "😴"})
-    print(f"   [+] 睡眠已补全: {round(total_sleep/3600, 1)}h")
+    print(f"   [+] 睡眠补全: {round(total_sleep/3600, 1)}h")
 
-
-# --- 4. 主程序 ---
 def main():
-    print("🚀 启动：一次性历史数据回填脚本 (Standalone)")
+    print(f"🚀 启动超级回填脚本 (目标: {TOTAL_ACTIVITIES_TO_SYNC} 条运动 / {DAYS_TO_BACKFILL} 天生活数据)")
     
-    # 读取环境变量
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
     notion_token = os.getenv("NOTION_TOKEN")
     
-    # 自动识别是 CN ID 还是普通 ID
     db_act = os.getenv("NOTION_CN_DB_ID") or os.getenv("NOTION_DB_ID")
     db_step = os.getenv("NOTION_CN_STEPS_DB_ID") or os.getenv("NOTION_STEPS_DB_ID")
     db_sleep = os.getenv("NOTION_CN_SLEEP_DB_ID") or os.getenv("NOTION_SLEEP_DB_ID")
 
-    if not all([email, password, notion_token, db_act, db_step, db_sleep]):
-        print("❌ 错误：环境变量缺失，请检查 GitHub Secrets")
+    if not all([email, password, notion_token]):
+        print("❌ 环境变量缺失")
         return
 
-    # 登录 Garmin
-    print("🔄 正在登录 Garmin (CN)...")
+    print("🔄 正在登录 Garmin CN...")
     try:
-        garmin = Garmin(email, password, is_cn=True) # 强制中国区
+        garmin = Garmin(email, password, is_cn=True)
         garmin.login()
         print("✅ 登录成功")
     except Exception as e:
         print(f"❌ 登录失败: {e}")
         return
 
-    # 连接 Notion
     notion = Client(auth=notion_token)
 
-    # 1. 补全运动记录
-    print(f"\n🏃 正在拉取最近 {ACTIVITY_LIMIT} 条运动记录...")
-    try:
-        activities = garmin.get_activities(0, ACTIVITY_LIMIT)
+    # 分页拉取运动记录
+    print(f"\n🏃 正在拉取运动记录 (每页 {BATCH_SIZE} 条)...")
+    processed_count = 0
+    start_index = 0
+    
+    while processed_count < TOTAL_ACTIVITIES_TO_SYNC:
+        remaining = TOTAL_ACTIVITIES_TO_SYNC - processed_count
+        current_limit = min(BATCH_SIZE, remaining)
+        
+        print(f"\n📄 正在读取第 {start_index} 到 {start_index + current_limit} 条...")
+        
+        try:
+            activities = garmin.get_activities(start_index, current_limit)
+        except Exception as e:
+            print(f"⚠️ 读取 Garmin 接口失败: {e}")
+            break
+            
+        if not activities:
+            print("✅ 已没有更多历史记录。")
+            break
+            
         for act in activities:
             sync_activity(notion, db_act, act)
-    except Exception as e:
-        print(f"⚠️ 运动记录同步出错: {e}")
+        
+        count = len(activities)
+        processed_count += count
+        start_index += count
+        
+        print(f"   -> 本页完成，休息 1 秒...")
+        time.sleep(1)
 
-    # 2. 补全步数和睡眠 (按天循环)
+    # 补全步数和睡眠
     print(f"\n📅 正在回填过去 {DAYS_TO_BACKFILL} 天的步数和睡眠...")
     today = date.today()
     start = today - timedelta(days=DAYS_TO_BACKFILL)
@@ -191,26 +205,24 @@ def main():
     
     while current < today:
         day_str = current.isoformat()
-        print(f"\n🔎 检查日期: {day_str}")
+        print(f"\n🔎 检查: {day_str}")
         
-        # 步数
         try:
             steps = garmin.get_daily_steps(day_str, day_str)
             if steps: sync_daily_steps(notion, db_step, steps[0])
         except Exception as e:
             print(f"⚠️ 步数错: {e}")
 
-        # 睡眠
         try:
             sleep = garmin.get_sleep_data(day_str)
             sync_sleep(notion, db_sleep, sleep)
         except Exception as e:
             print(f"⚠️ 睡眠错: {e}")
 
-        time.sleep(1) # 防封号
+        time.sleep(1) 
         current += timedelta(days=1)
 
-    print("\n✅ 所有回填任务完成！")
+    print("\n✅ 所有任务圆满完成！")
 
 if __name__ == "__main__":
     main()
