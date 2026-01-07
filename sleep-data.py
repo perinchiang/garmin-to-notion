@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from garminconnect import Garmin
 from notion_client import Client
 from dotenv import load_dotenv, dotenv_values
@@ -6,7 +6,7 @@ import pytz
 import os
 
 # Constants
-local_tz = pytz.timezone("America/New_York")
+local_tz = pytz.timezone("America/New_York") # 你可以改为 'Asia/Shanghai' 如果需要
 
 # Load environment variables
 load_dotenv()
@@ -33,7 +33,10 @@ def format_time_readable(timestamp):
     )
 
 def format_date_for_name(sleep_date):
-    return datetime.strptime(sleep_date, "%Y-%m-%d").strftime("%d.%m.%Y") if sleep_date else "Unknown"
+    # ⭐⭐ 修改这里：改为 YYYY/MM/DD ⭐⭐
+    if not sleep_date: return "Unknown"
+    return sleep_date.replace('-', '/') 
+    # 原来的代码是: datetime.strptime(sleep_date, "%Y-%m-%d").strftime("%d.%m.%Y")
 
 def sleep_data_exists(client, database_id, sleep_date):
     query = client.databases.query(
@@ -41,7 +44,7 @@ def sleep_data_exists(client, database_id, sleep_date):
         filter={"property": "Long Date", "date": {"equals": sleep_date}}
     )
     results = query.get('results', [])
-    return results[0] if results else None  # Ensure it returns None instead of causing IndexError
+    return results[0] if results else None
 
 def create_sleep_data(client, database_id, sleep_data, skip_zero_sleep=True):
     daily_sleep = sleep_data.get('dailySleepDTO', {})
@@ -52,7 +55,6 @@ def create_sleep_data(client, database_id, sleep_data, skip_zero_sleep=True):
     total_sleep = sum(
         (daily_sleep.get(k, 0) or 0) for k in ['deepSleepSeconds', 'lightSleepSeconds', 'remSleepSeconds']
     )
-    
     
     if skip_zero_sleep and total_sleep == 0:
         print(f"Skipping sleep data for {sleep_date} as total sleep is 0")
@@ -89,6 +91,7 @@ def main():
     database_id = os.getenv("NOTION_SLEEP_DB_ID")
 
     # Initialize Garmin client and login
+    # 记得保留 is_cn=True，因为你的账号是国区的
     garmin = Garmin(garmin_email, garmin_password, is_cn=True)
     garmin.login()
     client = Client(auth=notion_token)
