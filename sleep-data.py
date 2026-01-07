@@ -6,7 +6,7 @@ import pytz
 import os
 
 # Constants
-local_tz = pytz.timezone("America/New_York") # 你可以改为 'Asia/Shanghai' 如果需要
+local_tz = pytz.timezone('Asia/Shanghai')
 
 # Load environment variables
 load_dotenv()
